@@ -1,0 +1,3 @@
+@echo off
+echo Starting Exam Scheduler (JavaFX)...
+call "%~dp0mvnw.cmd" javafx:run
