@@ -1,0 +1,6 @@
+﻿*.zip
+PROMPTS.md
+__pycache__/
+*.pyc
+.vscode/
+.idea/
