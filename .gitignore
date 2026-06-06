@@ -1,6 +1,11 @@
 ﻿*.zip
 PROMPTS.md
+CLAUDE.md
 __pycache__/
 *.pyc
 .vscode/
 .idea/
+scripts/
+*.odt
+~$*
+*.bak
