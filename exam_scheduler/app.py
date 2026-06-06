@@ -1,24 +1,26 @@
-"""Exam Scheduler — Tkinter UI entry point."""
+"""User interface for exam scheduler."""
 import os
 import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
 
-# Resolve paths relative to this file so the app can be launched from anywhere
+# Paths to the data file and the output folder
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_PATH = os.path.join(_HERE, "data", "ga_exam_timetable_dataset.xlsx")
 OUTPUT_DIR = os.path.join(_HERE, "output")
 
+# Maps slot number (1-3) to a readable time string
 _SLOT_TIMES = {1: "09:00-11:00", 2: "12:00-14:00", 3: "15:00-17:00"}
 
-# State shared between UI thread and worker thread
+# Store the last GA run results so the Save button can use them
 _last_schedule: dict | None = None
 _last_history: list | None = None
 
 
 def _format_schedule(schedule: dict) -> str:
-    """Return schedule as a day-grid string for display in the ScrolledText."""
+    """Convert schedule dict to readable day-by-day format with times."""
+    # Group courses by (day, slot number)
     day_slots: dict[tuple[int, int], list[str]] = {}
     for course, slot_id in schedule.items():
         day = int(slot_id[1])
@@ -27,6 +29,7 @@ def _format_schedule(schedule: dict) -> str:
 
     lines = []
     for day in range(1, 7):
+        # Skip days that have no exams
         day_has_courses = any(d == day for (d, _) in day_slots)
         if not day_has_courses:
             continue
@@ -40,19 +43,21 @@ def _format_schedule(schedule: dict) -> str:
 
 def _build_ui(root: tk.Tk, courses: list, slots: list,
               conflict_table: dict, student_courses: dict) -> None:
+    """Build all UI widgets and attach event handlers."""
     global _last_schedule, _last_history
 
     root.title("Exam Scheduler")
     root.geometry("900x620")
     root.minsize(900, 620)
 
-    # ── Left panel ────────────────────────────────────────────────────────────
+    # Left panel holds settings and the Run button
     left = tk.Frame(root, padx=14, pady=14)
     left.pack(side=tk.LEFT, fill=tk.Y)
 
     tk.Label(left, text="Settings", font=("Arial", 12, "bold")).pack(anchor="w")
     tk.Frame(left, height=10).pack()
 
+    # Each tuple defines a label, config key, and default value
     _field_defs = [
         ("Population Size", "pop_size",     "100"),
         ("Max Generations", "max_gen",      "500"),
@@ -73,20 +78,22 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
     run_btn = tk.Button(left, text="Run GA", width=16)
     run_btn.pack(pady=4)
 
+    # Status label shows "Ready", "Running...", or "Done — penalty: X"
     status_var = tk.StringVar(value="Ready")
     tk.Label(left, textvariable=status_var, wraplength=190,
              justify=tk.LEFT).pack(anchor="w", pady=4)
 
-    # ── Separator ─────────────────────────────────────────────────────────────
+    # Thin vertical line to separate left and right panels
     tk.Frame(root, width=2, bg="#c0c0c0").pack(side=tk.LEFT, fill=tk.Y, padx=2)
 
-    # ── Right panel ───────────────────────────────────────────────────────────
+    # Right panel shows the schedule and action buttons
     right = tk.Frame(root, padx=14, pady=14)
     right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     tk.Label(right, text="Results", font=("Arial", 12, "bold")).pack(anchor="w")
     tk.Frame(right, height=8).pack()
 
+    # Read-only text area displays the best schedule after GA runs
     text_box = scrolledtext.ScrolledText(right, state=tk.DISABLED,
                                          wrap=tk.WORD, font=("Courier", 10))
     text_box.pack(fill=tk.BOTH, expand=True)
@@ -94,8 +101,8 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
     btn_row = tk.Frame(right)
     btn_row.pack(fill=tk.X, pady=8)
 
-    # ── Show Plot button ───────────────────────────────────────────────────────
     def _show_plot() -> None:
+        """Open the convergence chart in a new window."""
         plot_path = os.path.join(OUTPUT_DIR, "convergence.png")
         if not os.path.exists(plot_path):
             messagebox.showinfo("No plot", "Run the GA first to generate a plot.")
@@ -103,21 +110,24 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
         top = tk.Toplevel(root)
         top.title("Convergence Plot")
         try:
+            # Try to load PNG with built-in tkinter (only supports GIF/PNG in some versions)
             img = tk.PhotoImage(file=plot_path)
             tk.Label(top, image=img).pack()
-            top._img = img  # keep reference
+            top._img = img  # Keep reference so image is not garbage collected
         except Exception:
             try:
+                # Fall back to Pillow if tkinter cannot open the PNG
                 from PIL import Image, ImageTk
                 img = ImageTk.PhotoImage(Image.open(plot_path))
                 tk.Label(top, image=img).pack()
                 top._img = img
             except ImportError:
+                # If Pillow is not installed, just tell the user where the file is
                 messagebox.showinfo("Plot saved", f"Plot saved to:\n{plot_path}")
                 top.destroy()
 
-    # ── Save Results button ────────────────────────────────────────────────────
     def _save_results() -> None:
+        """Write schedule text file and penalty log CSV to the output folder."""
         if _last_schedule is None:
             messagebox.showinfo("No results", "Run the GA first.")
             return
@@ -130,8 +140,8 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
     tk.Button(btn_row, text="Show Plot",    command=_show_plot).pack(side=tk.LEFT, padx=4)
     tk.Button(btn_row, text="Save Results", command=_save_results).pack(side=tk.LEFT, padx=4)
 
-    # ── Run GA button logic ────────────────────────────────────────────────────
     def _on_run() -> None:
+        """Validate inputs, disable the button, and start the GA in a background thread."""
         global _last_schedule, _last_history
         try:
             config = {
@@ -144,6 +154,7 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
             messagebox.showerror("Invalid input", "All fields must be numeric.")
             return
 
+        # Disable the button so the user cannot start two runs at the same time
         run_btn.config(state=tk.DISABLED)
         status_var.set("Running...")
         text_box.config(state=tk.NORMAL)
@@ -151,12 +162,14 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
         text_box.config(state=tk.DISABLED)
 
         def _worker() -> None:
+            """Run the GA and then update the UI when done (called from background thread)."""
             from core.evolve import run_ga
             from core.report import save_plot
             best, history = run_ga(courses, slots, conflict_table,
                                    student_courses, config)
 
             def _on_done() -> None:
+                """Update UI widgets with results — must run on the main thread."""
                 global _last_schedule, _last_history
                 _last_schedule = best
                 _last_history = history
@@ -164,14 +177,17 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
                 run_btn.config(state=tk.NORMAL)
                 status_var.set(f"Done — penalty: {history[-1]}")
 
+                # Show the best schedule in the text box
                 text_box.config(state=tk.NORMAL)
                 text_box.delete("1.0", tk.END)
                 text_box.insert(tk.END, _format_schedule(best))
                 text_box.config(state=tk.DISABLED)
 
+                # Save the convergence chart to the output folder
                 os.makedirs(OUTPUT_DIR, exist_ok=True)
                 save_plot(history, os.path.join(OUTPUT_DIR, "convergence.png"))
 
+            # Use root.after to safely update the UI from the background thread
             root.after(0, _on_done)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -180,6 +196,8 @@ def _build_ui(root: tk.Tk, courses: list, slots: list,
 
 
 def main() -> None:
+    """Load data and open the main window."""
+    # Stop early if the dataset file is missing
     if not os.path.exists(DATA_PATH):
         _r = tk.Tk()
         _r.withdraw()
